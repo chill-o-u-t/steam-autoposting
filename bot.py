@@ -1,3 +1,4 @@
+import logging
 import os
 import time
 import random
@@ -210,18 +211,21 @@ class SteamCommentBot:
                 self.human_type(comment_area, comment_text)
 
             # Находим кнопку «Отправить» как в рабочей версии
+            print(1)
             submit_btn = self.wait.until(
                 EC.presence_of_element_located((
                     By.CSS_SELECTOR,
                     "button[id*='quickpost_submit'], .commentthread_submit button, .commentthread_submit input[type='submit']"
                 ))
             )
+            print(2)
             self.scroll_into_view(submit_btn)
             self.move_mouse_humanly(submit_btn)
             self.human_delay(0.3, 0.8)
 
             # Клик с фоллбэком на JS (исправляет «has no size and location»)
             self.safe_click(submit_btn)
+            print("3")
 
             # Подтверждение — textarea очистилась или появилась запись
             try:
@@ -238,9 +242,6 @@ class SteamCommentBot:
         except Exception as e:
             print(f"❌ Ошибка при отправке комментария: {e}")
             try:
-                from datetime import datetime
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                self.driver.save_screenshot(f"error_{ts}.png")
                 print("📸 Сделан скриншот ошибки")
             except:
                 pass
@@ -326,14 +327,7 @@ if __name__ == "__main__":
     missing_vars = [var for var in required_vars if not os.getenv(var)]
 
     if missing_vars:
-        print(f"❌ Отсутствуют обязательные переменные в .env: {', '.join(missing_vars)}")
-        print("💡 Пример .env файла:")
-        print("STEAM_LOGIN_SECURE=your_steam_login_secure_cookie")
-        print("STEAM_SESSIONID=your_session_id")
-        print("STEAM_REMEMBER_LOGIN=your_remember_login")
-        print(
-            "STEAM_GROUPS=https://steamcommunity.com/groups/group1,https://steamcommunity.com/groups/group2")
-        print("COMMENT_TEXT=Ваш комментарий здесь")
+        pass
     else:
         bot = SteamCommentBot()
         bot.run()
