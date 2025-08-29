@@ -10,4 +10,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Запуск бота
-CMD ["python", "bot_selenium.py"]
+CMD ["python", "bot.py"]

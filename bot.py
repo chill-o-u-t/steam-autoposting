@@ -2,11 +2,11 @@ import os
 import time
 import logging
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from webdriver_manager.chrome import ChromeDriverManager
 from dotenv import load_dotenv
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ----------------------------
 # Настройка
@@ -28,7 +28,7 @@ INTERVAL = int(os.getenv("INTERVAL", 300))  # 5 минут
 
 # Логирование
 logging.basicConfig(
-    filename="logs.txt",
+    filename="logs/logs.txt",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
@@ -37,11 +37,13 @@ logging.basicConfig(
 # Настройка Selenium
 # ----------------------------
 chrome_options = Options()
-chrome_options.add_argument("--headless")  # убрать, если нужно видеть браузер
+chrome_options.add_argument("--headless")  # убрать, если нужен визуальный браузер
 chrome_options.add_argument("--disable-gpu")
 chrome_options.add_argument("--no-sandbox")
+chrome_options.add_argument("--window-size=1920,1080")
 
-driver = webdriver.Chrome(ChromeDriverManager().install(), options=chrome_options)
+service = Service(ChromeDriverManager().install())
+driver = webdriver.Chrome(service=service, options=chrome_options)
 
 # ----------------------------
 # Авторизация через cookie
@@ -54,7 +56,7 @@ driver.add_cookie({
     'domain': '.steamcommunity.com'
 })
 driver.refresh()
-time.sleep(3)  # ждём, пока авторизуется
+time.sleep(5)  # ждём авторизацию
 
 # Проверка авторизации
 try:
@@ -77,7 +79,7 @@ while True:
             continue
         try:
             driver.get(group_url)
-            time.sleep(3)  # ждём загрузки страницы
+            time.sleep(5)  # ждём загрузки страницы
 
             # Находим поле комментария
             comment_area = driver.find_element(By.ID, "quickpost_text")
@@ -89,7 +91,7 @@ while True:
             submit_btn = driver.find_element(By.ID, "quickpost_submit")
             submit_btn.click()
             logging.info(f"✅ Сообщение отправлено в {group_url}")
-            time.sleep(2)
+            time.sleep(3)
         except Exception as e:
             logging.error(f"❌ Не удалось отправить комментарий в {group_url}: {e}")
 
