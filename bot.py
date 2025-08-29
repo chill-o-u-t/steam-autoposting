@@ -31,6 +31,34 @@ class SteamCommentBot:
         delay = random.uniform(min_seconds, max_seconds)
         time.sleep(delay)
 
+    def has_non_bmp(self, s: str) -> bool:
+        return any(ord(ch) > 0xFFFF for ch in s)
+
+    def js_fill_textarea(self, element, text: str):
+        # надёжно меняет value + триггерит события
+        self.driver.execute_script("""
+            const el = arguments[0], val = arguments[1];
+            const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+            desc.set.call(el, val);
+            el.dispatchEvent(new Event('input', {bubbles:true}));
+            el.dispatchEvent(new Event('change', {bubbles:true}));
+        """, element, text)
+
+    def scroll_into_view(self, el):
+        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+
+    def safe_click(self, el):
+        # если элемент не кликабелен «физически» — кликаем JS
+        try:
+            if not el.is_displayed() or el.size.get('width', 0) == 0 or el.size.get(
+                    'height', 0) == 0:
+                self.driver.execute_script("arguments[0].click();", el)
+            else:
+                el.click()
+        except Exception:
+            self.driver.execute_script("arguments[0].click();", el)
+
+
     def human_type(self, element, text):
         """Человеческий ввод текста с паузами и ошибками"""
         for char in text:
@@ -155,107 +183,64 @@ class SteamCommentBot:
             print(f"❌ Ошибка при авторизации через куки: {e}")
             return False
 
+    # --- замена метода ---
     def post_comment_to_group(self, group_url, comment_text):
-        """Отправка комментария в группу"""
         try:
             print(f"🌐 Перехожу в группу: {group_url}")
-
-            # Открываем группу
             self.driver.get(group_url)
-            self.human_delay(3, 6)
 
-            # Человеческая прокрутка
-            self.human_scroll()
-            self.human_delay(1, 2)
+            # Ищем «быстрый пост» как в старой версии
+            comment_area = self.wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR,
+                                                "textarea[id*='quickpost_text'], .commentthread_textarea"))
+            )
 
-            # Ищем поле для комментария
-            comment_selectors = [
-                "textarea.commentthread_textarea",
-                "textarea[name='comment']",
-                "#comment_form textarea",
-                ".commentthread_textarea",
-                "textarea.TextArea"
-            ]
-
-            comment_area = None
-            for selector in comment_selectors:
-                try:
-                    comment_area = self.wait.until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                    )
-                    print(f"✅ Найдено поле комментария: {selector}")
-                    break
-                except:
-                    continue
-
-            if not comment_area:
-                print("❌ Не найдено поле для комментария")
-                return False
-
-            # Человеческое взаимодействие с полем
+            self.scroll_into_view(comment_area)
             self.move_mouse_humanly(comment_area)
-            self.human_delay(1, 2)
+            self.human_delay(0.4, 1.0)
 
-            # Кликаем и вводим текст
-            comment_area.click()
-            self.human_delay(0.5, 1)
-            self.human_type(comment_area, comment_text)
-            self.human_delay(1, 2)
+            # очищаем через JS (иногда .clear() не триггерит события)
+            self.driver.execute_script("arguments[0].value='';", comment_area)
 
-            # Ищем кнопку отправки
-            button_selectors = [
-                "input[type='submit'][value='Post Comment']",
-                "button[type='submit']",
-                ".commentthread_submit",
-                "#comment_post",
-                ".DialogButton"
-            ]
+            # Ввод: если есть эмодзи — через JS, иначе «человеческий» набор
+            if self.has_non_bmp(comment_text):
+                self.js_fill_textarea(comment_area, comment_text)
+            else:
+                comment_area.click()
+                self.human_type(comment_area, comment_text)
 
-            submit_button = None
-            for selector in button_selectors:
-                try:
-                    submit_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+            # Находим кнопку «Отправить» как в рабочей версии
+            submit_btn = self.wait.until(
+                EC.presence_of_element_located((
+                    By.CSS_SELECTOR,
+                    "button[id*='quickpost_submit'], .commentthread_submit button, .commentthread_submit input[type='submit']"
+                ))
+            )
+            self.scroll_into_view(submit_btn)
+            self.move_mouse_humanly(submit_btn)
+            self.human_delay(0.3, 0.8)
 
-                    print(f"✅ Найдена кнопка отправки: {selector}")
-                    break
-                except:
-                    continue
+            # Клик с фоллбэком на JS (исправляет «has no size and location»)
+            self.safe_click(submit_btn)
 
-            if not submit_button:
-                print("❌ Не найдена кнопка отправки")
-                return False
-
-            # Человеческое нажатие кнопки
-            self.move_mouse_humanly(submit_button)
-            self.human_delay(1, 2)
+            # Подтверждение — textarea очистилась или появилась запись
             try:
-                submit_button = self.wait.until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR,
-                                                ".commentthread_submit input, .commentthread_submit button, .DialogButton"))
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: (comment_area.get_attribute("value") or "").strip() == ""
                 )
-                self.move_mouse_humanly(submit_button)
-                self.human_delay(0.5, 1.5)
-                # если всё ещё невидимая — жмём JS
-                if not submit_button.is_displayed() or submit_button.size == {
-                    'height': 0, 'width': 0}:
-                    self.driver.execute_script("arguments[0].click();", submit_button)
-                else:
-                    submit_button.click()
-                print("✅ Комментарий отправлен")
-            except Exception as e:
-                print(f"❌ Ошибка при клике по кнопке: {e}")
+            except TimeoutException:
+                pass
 
             print("✅ Комментарий отправлен")
-            self.human_delay(5, 10)  # Долгая пауза после отправки
-
+            self.human_delay(3, 6)
             return True
 
         except Exception as e:
             print(f"❌ Ошибка при отправке комментария: {e}")
-            # Делаем скриншот при ошибке
             try:
-                # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                # self.driver.save_screenshot(f"error_{timestamp}.png")
+                from datetime import datetime
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.driver.save_screenshot(f"error_{ts}.png")
                 print("📸 Сделан скриншот ошибки")
             except:
                 pass
