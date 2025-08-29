@@ -238,8 +238,8 @@ class SteamCommentBot:
             print(f"❌ Ошибка при отправке комментария: {e}")
             # Делаем скриншот при ошибке
             try:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                self.driver.save_screenshot(f"error_{timestamp}.png")
+                # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # self.driver.save_screenshot(f"error_{timestamp}.png")
                 print("📸 Сделан скриншот ошибки")
             except:
                 pass
@@ -260,7 +260,7 @@ class SteamCommentBot:
             # Чтение списка групп и комментария
             groups_to_post = os.getenv('STEAM_GROUPS', '').split(',')
             comment_text = (
-                 "🖤Send me offer🖤\n"
+                 "Send me offer\n"
                  ":steamthis: Open to any deals"
                  "\nhttps://steamcommunity.com/tradeoffer/new/?partner=889283026&token=NhsSV1bu"
                  "\n[H]"
