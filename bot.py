@@ -84,7 +84,6 @@ def post_comment(group_url, message):
 
     r = session.post(comment_url, data=payload, headers=headers)
     if r.status_code == 200:
-        logging.info(f"{r.json()}")
         logging.info(f"Сообщение отправлено в {group_url}")
     else:
         logging.error(f"Ошибка {r.status_code} при отправке в {group_url} | Ответ: {r.text[:200]}")
