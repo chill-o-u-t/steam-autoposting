@@ -88,7 +88,9 @@ class SteamCommentBot:
             options=chrome_options,
             user_data_dir=self.temp_dir,  # Важно: указываем временную директорию
             headless=False,
-            version_main=114  # Укажите конкретную версию если нужно
+            version_main=114,  # Укажите конкретную версию если нужно
+            driver_executable_path=os.getenv("UC_DRIVER_EXECUTABLE_PATH",
+                                             "/usr/bin/chromedriver"),
         )
 
         # Убираем webdriver признаки
