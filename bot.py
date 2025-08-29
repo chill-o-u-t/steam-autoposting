@@ -1,448 +1,344 @@
-import logging
 import os
 import time
 import random
 import json
+import shutil
+import signal
 import tempfile
 from datetime import datetime
+
 from dotenv import load_dotenv
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, \
-    ElementNotInteractableException
+from selenium.common.exceptions import (
+    TimeoutException,
+    NoSuchElementException,
+    ElementNotInteractableException,
+    StaleElementReferenceException,
+)
+
 import undetected_chromedriver as uc
-from selenium.common.exceptions import TimeoutException
-from time import monotonic, sleep
-from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import TimeoutException
 
-def _find_entry_container(driver, textarea):
-    # ближайший контейнер для блока комментария
-    return driver.execute_script("""
-        const el = arguments[0];
-        return el.closest('.commentthread_entry') 
-            || el.closest('.commentthread_area') 
-            || el.closest('form') 
-            || document;
-    """, textarea)
-
-def _pick_submit_inside(driver, container):
-    # ищем максимально широкий набор вариантов
-    return driver.execute_script("""
-        const root = arguments[0];
-        const sel = [
-            "button[id*='quickpost_submit']",
-            "#quickpost_submit",
-            ".commentthread_submit [id*='_submit']",
-            ".commentthread_submit .btn_green_white_innerfade",
-            ".commentthread_submit .btnv6_blue_hoverfade",
-            ".commentthread_footer .btn_green_white_innerfade",
-            ".commentthread_footer .btnv6_blue_hoverfade",
-            ".commentthread_submit button[type='submit']",
-            ".commentthread_submit input[type='submit']",
-            // общий запасной вариант
-            "button[type='submit']",
-            "input[type='submit']"
-        ].join(',');
-        return root.querySelector(sel);
-    """, container)
-
-def _is_visible(driver, el):
-    if not el:
-        return False
-    try:
-        # проверяем display/visibility/размер
-        return driver.execute_script("""
-            const el = arguments[0];
-            const r = el.getBoundingClientRect();
-            const st = window.getComputedStyle(el);
-            return !!(
-                r.width > 0 && r.height > 0 &&
-                st.visibility !== 'hidden' &&
-                st.display !== 'none'
-            );
-        """, el)
-    except Exception:
-        return False
-
-def _js_click(driver, el):
-    driver.execute_script("arguments[0].click();", el)
-
-
-# Загрузка переменных окружения
+# ----------------------------
+# ENV
+# ----------------------------
 load_dotenv()
+STEAM_LOGIN_SECURE = os.getenv("STEAM_LOGIN_SECURE")
+STEAM_GROUPS = [g.strip() for g in os.getenv("STEAM_GROUPS", "").split(",") if g.strip()]
+MESSAGE = os.getenv(
+    "MESSAGE",
+    "🖤Send me offer🖤\n"
+    ":steamthis: Open to any deals"
+    "\nhttps://steamcommunity.com/tradeoffer/new/?partner=889283026&token=NhsSV1bu"
+    "\n[H]"
+    "\nButterfly knife | boreal forest FT"
+    "\nSport gloves | bronze morph BS"
+    "\nUSP-S | kill сonfirmed FT"
+)
+INTERVAL = int(os.getenv("INTERVAL", "300"))
+CHROME_BIN = os.getenv("CHROME_BIN", "/usr/bin/chromium-browser")
+CHROMEDRIVER = os.getenv("UC_DRIVER_EXECUTABLE_PATH", "/usr/bin/chromedriver")
 
 
 class SteamCommentBot:
     def __init__(self):
         self.driver = None
         self.wait = None
-        self.temp_dir = tempfile.mkdtemp(prefix="chrome_")
+        self.temp_dir = tempfile.mkdtemp(prefix="chrome_profile_")
 
-    def human_delay(self, min_seconds=1, max_seconds=3):
-        """Случайная задержка между действиями"""
-        delay = random.uniform(min_seconds, max_seconds)
-        time.sleep(delay)
+    # ----------------------------
+    # Human-ish helpers
+    # ----------------------------
+    def human_delay(self, a=0.3, b=0.9):
+        time.sleep(random.uniform(a, b))
 
-    def wait_any_visible(self, selectors, timeout=15):
-        """Ждет первый видимый элемент по любому из селекторов."""
-        deadline = monotonic() + timeout
-        while monotonic() < deadline:
-            for css in selectors:
-                els = self.driver.find_elements(By.CSS_SELECTOR, css)
-                for el in els:
-                    if el.is_displayed() and el.size.get('width', 0) > 0 and el.size.get(
-                            'height', 0) > 0:
-                        return el
-            sleep(0.2)
-        raise TimeoutException(f"Не нашел видимую кнопку по {selectors}")
+    def human_type(self, element, text):
+        for ch in text:
+            element.send_keys(ch)
+            time.sleep(random.uniform(0.03, 0.12))
+            if random.random() < 0.02:
+                element.send_keys(Keys.BACK_SPACE)
+                time.sleep(random.uniform(0.05, 0.2))
+                element.send_keys(ch)
 
-    def scroll_into_view(self, el):
-        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-
-    def safe_click(self, el):
-        """Клик с фоллбэком на JS, если элемент невидим/без размера."""
+    def move_mouse_humanly(self, element):
+        # минимальная «имитация» — достаточно скролла к элементу
         try:
-            if not el.is_displayed() or el.size.get('width', 0) == 0 or el.size.get(
-                    'height', 0) == 0:
-                self.driver.execute_script("arguments[0].click();", el)
-            else:
-                el.click()
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
         except Exception:
-            self.driver.execute_script("arguments[0].click();", el)
+            pass
 
-
-    def has_non_bmp(self, s: str) -> bool:
+    # ----------------------------
+    # DOM/JS helpers
+    # ----------------------------
+    @staticmethod
+    def has_non_bmp(s: str) -> bool:
         return any(ord(ch) > 0xFFFF for ch in s)
 
     def js_fill_textarea(self, element, text: str):
-        # надёжно меняет value + триггерит события
-        self.driver.execute_script("""
+        self.driver.execute_script(
+            """
             const el = arguments[0], val = arguments[1];
             const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
             desc.set.call(el, val);
             el.dispatchEvent(new Event('input', {bubbles:true}));
             el.dispatchEvent(new Event('change', {bubbles:true}));
-        """, element, text)
+            """,
+            element,
+            text,
+        )
 
-    def scroll_into_view(self, el):
-        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
-
-    def safe_click(self, el):
-        # если элемент не кликабелен «физически» — кликаем JS
+    def is_visible_js(self, el) -> bool:
         try:
-            if not el.is_displayed() or el.size.get('width', 0) == 0 or el.size.get(
-                    'height', 0) == 0:
-                self.driver.execute_script("arguments[0].click();", el)
-            else:
-                el.click()
+            return self.driver.execute_script(
+                """
+                const el = arguments[0];
+                if (!el) return false;
+                const st = getComputedStyle(el);
+                const r = el.getBoundingClientRect();
+                return st.display !== 'none' && st.visibility !== 'hidden' && r.width > 0 && r.height > 0;
+                """,
+                el,
+            )
         except Exception:
-            self.driver.execute_script("arguments[0].click();", el)
-
-
-    def human_type(self, element, text):
-        """Человеческий ввод текста с паузами и ошибками"""
-        for char in text:
-            element.send_keys(char)
-            time.sleep(random.uniform(0.05, 0.2))
-            if random.random() < 0.03:
-                element.send_keys(Keys.BACK_SPACE)
-                time.sleep(random.uniform(0.1, 0.3))
-                element.send_keys(char)
-
-    def human_scroll(self, scroll_min=200, scroll_max=800):
-        """Человеческая прокрутка страницы"""
-        scroll_amount = random.randint(scroll_min, scroll_max)
-        self.driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
-        self.human_delay(0.5, 1.5)
-
-    def move_mouse_humanly(self, element):
-        """Движение мыши как у человека"""
-        actions = ActionChains(self.driver)
-        actions.move_to_element(element)
-        actions.perform()
-        self.human_delay(0.2, 0.5)
-
+            return False
+    # ----------------------------
+    # Driver
+    # ----------------------------
     def get_stealth_driver(self):
-        # ВАЖНО: берём опции из uc
-        chrome_options = uc.ChromeOptions()
-
-        # контейнер/Alpine
-        chrome_options.add_argument("--headless=new")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
-
-        # антидетект: достаточно этого флага
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-
-        # КЭШ/профиль — не дублируем user_data_dir
-        chrome_options.add_argument(f"--user-data-dir={self.temp_dir}")
-        chrome_options.add_argument("--disable-application-cache")
-        chrome_options.add_argument("--disk-cache-size=0")
-
+        opts = uc.ChromeOptions()
+        # контейнерные флаги
+        opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("--window-size=1920,1080")
+        # антидетект
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        # профиль/кэш
+        opts.add_argument(f"--user-data-dir={self.temp_dir}")
+        opts.add_argument("--disable-application-cache")
+        opts.add_argument("--disk-cache-size=0")
         # user-agent
-        chrome_options.add_argument(
-            "--user-agent="
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        opts.add_argument(
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
 
-        CHROME_BIN = os.getenv("CHROME_BIN", "/usr/bin/chromium-browser")
-        CHROMEDRIVER = os.getenv("UC_DRIVER_EXECUTABLE_PATH", "/usr/bin/chromedriver")
-
-        # Не указываем version_main; не используем excludeSwitches/useAutomationExtension
         driver = uc.Chrome(
-            options=chrome_options,
-            headless=True,
-            browser_executable_path=CHROME_BIN,  # вместо options.binary_location
-            driver_executable_path=CHROMEDRIVER if os.path.exists(
-                CHROMEDRIVER) else None,
+            options=opts,
+            headless=True,  # дублируем для uc
+            browser_executable_path=CHROME_BIN,
+            driver_executable_path=CHROMEDRIVER if os.path.exists(CHROMEDRIVER) else None,
         )
-
-        # Доп. шлиф — необязательно с uc, но не мешает
-        driver.execute_script(
-            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+        # убрать navigator.webdriver
+        driver.execute_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         return driver
 
-    def login_with_cookies(self):
-        """Авторизация через куки"""
-        try:
-            print("🔐 Авторизация через куки...")
+    # ----------------------------
+    # Auth via cookies
+    # ----------------------------
+    def login_with_cookies(self) -> bool:
+        print("🔐 Авторизация через куки...")
+        self.driver.get("https://steamcommunity.com/")
+        self.human_delay(1.0, 2.0)
 
-            # Сначала переходим на домен steamcommunity.com
-            self.driver.get("https://steamcommunity.com")
-            self.human_delay(2, 4)
-
-            # Добавляем необходимые куки
-            cookies_to_add = [
-                {
-                    'name': 'steamLoginSecure',
-                    'value': os.getenv('STEAM_LOGIN_SECURE'),
-                    'domain': '.steamcommunity.com',
-                    'path': '/',
-                    'secure': True
-                },
-                {
-                    'name': 'steamRememberLogin',
-                    'value': os.getenv('STEAM_REMEMBER_LOGIN', ''),
-                    'domain': '.steamcommunity.com',
-                    'path': '/',
-                    'secure': True
-                }
-            ]
-
-            for cookie in cookies_to_add:
-                if cookie['value']:  # Добавляем только если значение есть
-                    try:
-                        self.driver.add_cookie(cookie)
-                        print(f"✅ Добавлена кука: {cookie['name']}")
-                    except Exception as e:
-                        print(f"⚠️ Не удалось добавить куку {cookie['name']}: {e}")
-
-            # Обновляем страницу для применения кук
-            self.driver.refresh()
-            self.human_delay(3, 5)
-
-            # Проверяем авторизацию
-            self.driver.get("https://steamcommunity.com/my/profile")
-            self.human_delay(2, 4)
-
-            # Проверяем, что мы авторизованы
+        self.driver.delete_all_cookies()
+        if STEAM_LOGIN_SECURE:
             try:
-                profile_name = self.wait.until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "persona_name"))
+                self.driver.add_cookie(
+                    {
+                        "name": "steamLoginSecure",
+                        "value": STEAM_LOGIN_SECURE,
+                        "domain": ".steamcommunity.com",
+                        "path": "/",
+                        "secure": True,
+                    }
                 )
-                print(f"✅ Успешная авторизация как: {profile_name.text}")
-                return True
-            except:
-                print("❌ Не удалось авторизоваться через куки")
-                return False
+                print("✅ Добавлена кука: steamLoginSecure")
+            except Exception as e:
+                print(f"⚠️ Не удалось добавить steamLoginSecure: {e}")
 
-        except Exception as e:
-            print(f"❌ Ошибка при авторизации через куки: {e}")
+        self.driver.refresh()
+        self.human_delay(2.0, 3.5)
+
+        # проверяем наличие меню/аватара
+        self.driver.get("https://steamcommunity.com/")
+        try:
+            WebDriverWait(self.driver, 20).until(
+                EC.presence_of_element_located((By.ID, "global_action_menu"))
+            )
+            # sessionid тоже должен появиться
+            if not self.driver.get_cookie("sessionid"):
+                print("⚠️ sessionid не найден, но меню видно — пробую продолжить")
+            print("✅ Авторизация успешна")
+            return True
+        except TimeoutException:
+            print("❌ Авторизация не удалась — нет меню пользователя")
             return False
 
-    # --- замена метода ---
-    def post_comment_to_group(self, group_url, comment_text):
+    # ----------------------------
+    # Posting
+    # ----------------------------
+    def _wait_submit_container_visible(self, container_id: str, timeout=12):
+        end = time.time() + timeout
+        last_exc = None
+        while time.time() < end:
+            try:
+                el = self.driver.find_element(By.ID, container_id)
+                if self.is_visible_js(el):
+                    return el
+            except StaleElementReferenceException as e:
+                last_exc = e
+            except NoSuchElementException:
+                pass
+            time.sleep(0.2)
+        raise TimeoutException(f"Submit container not visible: #{container_id}") from last_exc
+    def _click_submit_by_id(self, submit_id: str):
+        btn = self.driver.find_element(By.ID, submit_id)  # свежий элемент
+        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+        self.human_delay(0.2, 0.6)
         try:
-            submit_selectors = [
-                # быстрый пост
-                "button[id*='quickpost_submit']",
-                "#quickpost_submit",
-                # обычный comment thread
-                ".commentthread_submit [id*='_submit']",
-                ".commentthread_submit .btn_green_white_innerfade",
-                ".commentthread_submit .btnv6_blue_hoverfade",
-                ".commentthread_footer .btn_green_white_innerfade",
-                ".commentthread_footer .btnv6_blue_hoverfade",
-                # на всякий случай любой submit внутри блока
-                ".commentthread_submit button[type='submit']",
-                ".commentthread_submit input[type='submit']",
-            ]
+            if self.is_visible_js(btn):
+                btn.click()
+            else:
+                self.driver.execute_script("arguments[0].click();", btn)
+        except Exception:
+            # повтор через JS
+            btn = self.driver.find_element(By.ID, submit_id)
+            self.driver.execute_script("arguments[0].click();", btn)
+
+    def post_comment_to_group(self, group_url: str, comment_text: str) -> bool:
+        try:
             print(f"🌐 Перехожу в группу: {group_url}")
             self.driver.get(group_url)
+            self.human_delay(1.5, 2.5)
 
-
-
-            # Ищем «быстрый пост» как в старой версии
-            comment_area = self.wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR,
-                                                "textarea[id*='quickpost_text'], .commentthread_textarea"))
+            # Находим textarea «быстрого поста»
+            comment_area = WebDriverWait(self.driver, 20).until(
+                EC.presence_of_element_located(
+                    (
+                        By.CSS_SELECTOR,
+                        "textarea[id*='_textarea'].commentthread_textarea, textarea.commentthread_textarea",
+                    )
+                )
             )
 
-            self.scroll_into_view(comment_area)
-            self.move_mouse_humanly(comment_area)
-            self.human_delay(0.4, 1.0)
+            # Фокус/скролл
+            try:
+                comment_area.click()
+            except Exception:
+                pass
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", comment_area)
+            self.human_delay(0.3, 0.8)
 
-            # очищаем через JS (иногда .clear() не триггерит события)
+            # Очистка и ввод текста (JS для эмодзи)
             self.driver.execute_script("arguments[0].value='';", comment_area)
-
-            container = _find_entry_container(self.driver, comment_area)
-            submit = _pick_submit_inside(self.driver, container)
-
-            html = self.driver.execute_script("return arguments[0].outerHTML;",
-                                              container)
-            print(html[:4000])
-
-            # если нашли, пробуем кликнуть
-            if submit:
-                self.scroll_into_view(submit)
-                self.move_mouse_humanly(submit)
-                self.human_delay(0.2, 0.6)
-                try:
-                    if _is_visible(self.driver, submit):
-                        submit.click()
-                    else:
-                        _js_click(self.driver,
-                                  submit)  # обходит "has no size and location"
-                except Exception:
-                    _js_click(self.driver, submit)
+            if self.has_non_bmp(comment_text):
+                self.js_fill_textarea(comment_area, comment_text)
             else:
-                # кнопки нет — пробуем submit формы или хоткей
-                fired = self.driver.execute_script("""
-                    const root = arguments[0];
-                    const form = root.closest('form');
-                    if (form) {
-                        const ev = new Event('submit', {bubbles:true, cancelable:true});
-                        form.dispatchEvent(ev);
-                        if (typeof form.submit === 'function') form.submit();
-                        return 'form-submitted';
-                    }
-                    return 'no-form';
-                """, comment_area)
+                self.human_type(comment_area, comment_text)
+            self.human_delay(0.3, 0.8)
 
-                if fired != 'form-submitted':
-                    # запасной путь: Ctrl+Enter (часто поддерживается)
-                    comment_area.send_keys(Keys.CONTROL, Keys.ENTER)
+            # Из ID textarea строим ID контейнера/кнопки
+            textarea_id = comment_area.get_attribute("id") or ""
+            base_id = textarea_id[:-9] if textarea_id.endswith("_textarea") else textarea_id
+            submit_container_id = f"{base_id}_submit_container"
+            submit_id = f"{base_id}_submit"
 
-            # подтверждение (очистилась textarea или кнопка задизейблилась)
+            # Ждём, пока контейнер появится/станет видимым (после ввода Steam перерисовывает DOM)
+            submit_container = self._wait_submit_container_visible(submit_container_id, timeout=12)
+
+            # Находим кнопку по свежему id и кликаем (JS-фоллбэк)
+            self._click_submit_by_id(submit_id)
+
+            # Подтверждение: textarea очистилась или контейнер скрылся
             try:
                 WebDriverWait(self.driver, 10).until(
-                    lambda d: (comment_area.get_attribute("value") or "").strip() == ""
+                    lambda d: ((comment_area.get_attribute("value") or "").strip() == "")
+                    or (not self.is_visible_js(d.find_element(By.ID, submit_container_id)))
                 )
             except TimeoutException:
                 pass
 
             print("✅ Комментарий отправлен")
-            self.human_delay(3, 6)
+            self.human_delay(2.5, 5.0)
             return True
 
         except Exception as e:
             print(f"❌ Ошибка при отправке комментария: {e}")
             try:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.driver.save_screenshot(f"error_{ts}.png")
                 print("📸 Сделан скриншот ошибки")
-            except:
+            except Exception:
                 pass
             return False
 
+    # ----------------------------
+    # Run
+    # ----------------------------
     def run(self):
-        """Основной метод запуска бота"""
-        try:
-            # Инициализация драйвера
-            self.driver = self.get_stealth_driver()
-            self.wait = WebDriverWait(self.driver, 15)
+        if not STEAM_LOGIN_SECURE or not STEAM_GROUPS:
+            missing = []
+            if not STEAM_LOGIN_SECURE:
+                missing.append("STEAM_LOGIN_SECURE")
+            if not STEAM_GROUPS:
+                missing.append("STEAM_GROUPS")
+            print(f"❌ Отсутствуют обязательные переменные: {', '.join(missing)}")
+            return
 
-            # Авторизация через куки
-            if not self.login_with_cookies():
-                print("❌ Не удалось авторизоваться")
-                return
+        # инициализация драйвера
+        self.driver = self.get_stealth_driver()
+        self.wait = WebDriverWait(self.driver, 25)
 
-            # Чтение списка групп и комментария
-            groups_to_post = os.getenv('STEAM_GROUPS', '').split(',')
-            comment_text = (
-                 "Send me offer\n"
-                 ":steamthis: Open to any deals"
-                 "\nhttps://steamcommunity.com/tradeoffer/new/?partner=889283026&token=NhsSV1bu"
-                 "\n[H]"
-                 "\nButterfly knife | boreal forest FT"
-                 "\nSport gloves | bronze morph BS"
-                 "\nUSP-S | kill сonfirmed FT"
-             )
-
-            if not groups_to_post or not comment_text:
-                print("❌ Не указаны группы или текст комментария в .env")
-                return
-
-            successful_posts = 0
-            failed_posts = 0
-
-            print(f"📊 Начинаю отправку комментариев в {len(groups_to_post)} групп...")
-
-            for i, group_url in enumerate(groups_to_post):
-                group_url = group_url.strip()
-                if not group_url:
-                    continue
-
-                print(
-                    f"\n📝 Обрабатываю группу {i + 1}/{len(groups_to_post)}: {group_url}")
-
-                success = self.post_comment_to_group(group_url, comment_text)
-
-                if success:
-                    successful_posts += 1
-                    print(f"✅ Успешно отправлено: {successful_posts}")
-                else:
-                    failed_posts += 1
-                    print(f"❌ Неудачных попыток: {failed_posts}")
-
-                # Случайная задержка между группами (2-5 минут)
-                if i < len(groups_to_post) - 1:
-                    delay = random.randint(180, 300)
-                    print(f"⏳ Ожидание {delay} секунд перед следующей группой...")
-                    time.sleep(delay)
-
-            print(f"\n🎯 Итог: Успешно {successful_posts}, Неудачно {failed_posts}")
-
-        except Exception as e:
-            print(f"💥 Критическая ошибка: {e}")
-
-        finally:
-            if self.driver:
-                print("🛑 Завершаю работу...")
-                self.driver.quit()
-
+        # аккуратное завершение
+        def _graceful_exit(*_):
             try:
-                import shutil
-                shutil.rmtree(self.temp_dir, ignore_errors=True)
-                print("🗑️ Временные файлы очищены")
-            except:
-                pass
+                if self.driver:
+                    self.driver.quit()
+            finally:
+                try:
+                    shutil.rmtree(self.temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+                os._exit(0)
+
+        signal.signal(signal.SIGTERM, _graceful_exit)
+        signal.signal(signal.SIGINT, _graceful_exit)
+
+        # авторизация
+        if not self.login_with_cookies():
+            print("❌ Не удалось авторизоваться")
+            _graceful_exit()
+
+        # цикл по группам
+        ok, fail = 0, 0
+        print(f"📊 Начинаю отправку комментариев в {len(STEAM_GROUPS)} групп(ы)...")
+        for i, url in enumerate(STEAM_GROUPS, 1):
+            if not url:
+                continue
+            print(f"\n📝 Группа {i}/{len(STEAM_GROUPS)}: {url}")
+            if self.post_comment_to_group(url, MESSAGE):
+                ok += 1
+                print(f"✅ Успешно: {ok}")
+            else:
+                fail += 1
+                print(f"❌ Неудачно: {fail}")
+
+            if i < len(STEAM_GROUPS):
+                wait_sec = random.randint(180, 300)
+                print(f"⏳ Ожидание {wait_sec} сек перед следующей группой…")
+                time.sleep(wait_sec)
+
+        print(f"\n🎯 Итог: Успешно {ok}, Неудачно {fail}")
+        _graceful_exit()
 
 
 if __name__ == "__main__":
-    # Проверка обязательных переменных
-    required_vars = ['STEAM_LOGIN_SECURE', 'STEAM_GROUPS']
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
-
-    if missing_vars:
-        pass
-    else:
-        bot = SteamCommentBot()
-        bot.run()
+    bot = SteamCommentBot()
+    bot.run()
