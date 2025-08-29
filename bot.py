@@ -79,14 +79,25 @@ def post_comment(group_url, message):
     payload = {
         "comment": message,
         "count": 6,
-        "sessionid": sessionid
+        "sessionid": sessionid,
+        "extended_data": ""
     }
 
-    r = session.post(comment_url, data=payload, headers=headers)
-    if r.status_code == 200:
-        logging.info(f"Сообщение отправлено в {group_url}")
+    # Referer должен совпадать с группой
+    headers_local = headers.copy()
+    headers_local["Referer"] = group_url
+
+    r = session.post(comment_url, data=payload, headers=headers_local)
+
+    try:
+        resp_json = r.json()
+    except Exception:
+        resp_json = r.text
+
+    if r.status_code == 200 and isinstance(resp_json, dict) and resp_json.get("success"):
+        logging.info(f"✅ Сообщение отправлено в {group_url}")
     else:
-        logging.error(f"Ошибка {r.status_code} при отправке в {group_url} | Ответ: {r.text[:200]}")
+        logging.error(f"❌ Ошибка отправки в {group_url} | Код {r.status_code} | Ответ: {resp_json}")
 
 
 def run():
