@@ -20,7 +20,7 @@ from selenium.common.exceptions import (
     ElementNotInteractableException,
     StaleElementReferenceException,
 )
-
+from selenium.webdriver.common.action_chains import ActionChains
 import undetected_chromedriver as uc
 
 # ----------------------------
@@ -49,6 +49,47 @@ class SteamCommentBot:
         self.driver = None
         self.wait = None
         self.temp_dir = tempfile.mkdtemp(prefix="chrome_profile_")
+
+    def _activate_textarea(self, ta):
+        """Делает реальную активацию поля: клик + keydown/keyup, чтобы Steam раскрыл submit_container."""
+        try:
+            # иногда роль у textarea = button, жмём JS-клик и обычный клик
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});",
+                                       ta)
+            try:
+                ta.click()
+            except Exception:
+                pass
+            self.driver.execute_script("""
+                const el = arguments[0];
+                el.focus();
+                el.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+                el.dispatchEvent(new MouseEvent('mouseup', {bubbles:true}));
+                el.dispatchEvent(new MouseEvent('click', {bubbles:true}));
+            """, ta)
+            # «укол» клавишей чтобы сработали keydown/keyup-слушатели Steam
+            try:
+                ta.send_keys("a")
+                ta.send_keys(Keys.BACK_SPACE)
+            except Exception:
+                # если send_keys блокируется — синтетика
+                self.driver.execute_script("""
+                    const el = arguments[0];
+                    ['keydown','keyup','keypress'].forEach(t=>el.dispatchEvent(new KeyboardEvent(t,{bubbles:true})));
+                """, ta)
+        except Exception:
+            pass
+
+    def _js_set_value_and_events(self, ta, text):
+        """Вставляет любой текст (включая эмодзи) и триггерит события."""
+        self.driver.execute_script("""
+            const el = arguments[0], val = arguments[1];
+            const desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+            desc.set.call(el, val);
+            el.dispatchEvent(new Event('input', {bubbles:true}));
+            el.dispatchEvent(new Event('change', {bubbles:true}));
+            el.dispatchEvent(new KeyboardEvent('keyup', {bubbles:true}));
+        """, ta, text)
 
     # ----------------------------
     # Human-ish helpers
@@ -237,21 +278,65 @@ class SteamCommentBot:
             self.human_delay(0.3, 0.8)
 
             # Очистка и ввод текста (JS для эмодзи)
-            self.driver.execute_script("arguments[0].value='';", comment_area)
-            if self.has_non_bmp(comment_text):
-                self.js_fill_textarea(comment_area, comment_text)
-            else:
-                self.human_type(comment_area, comment_text)
+            self._activate_textarea(comment_area)
             self.human_delay(0.3, 0.8)
+
+            self.driver.execute_script("arguments[0].value='';", comment_area)
+            self._js_set_value_and_events(comment_area, comment_text)
+            self.human_delay(0.2, 0.5)
 
             # Из ID textarea строим ID контейнера/кнопки
             textarea_id = comment_area.get_attribute("id") or ""
-            base_id = textarea_id[:-9] if textarea_id.endswith("_textarea") else textarea_id
+            base_id = textarea_id[:-9] if textarea_id.endswith(
+                "_textarea") else textarea_id
             submit_container_id = f"{base_id}_submit_container"
             submit_id = f"{base_id}_submit"
 
-            # Ждём, пока контейнер появится/станет видимым (после ввода Steam перерисовывает DOM)
-            submit_container = self._wait_submit_container_visible(submit_container_id, timeout=12)
+            submit_el = None
+            try:
+                # если Steam отреагировал — контейнер станет видимым
+                submit_container = self._wait_submit_container_visible(
+                    submit_container_id, timeout=8)
+                submit_el = self.driver.find_element(By.ID, submit_id)
+            except TimeoutException:
+                # UI не раскрылся — берём кнопку напрямую, даже если контейнер скрыт
+                try:
+                    submit_el = self.driver.find_element(By.ID, submit_id)
+                except NoSuchElementException:
+                    # крайний случай: попробуем насильно показать контейнер (не всегда нужно)
+                    try:
+                        self.driver.execute_script(
+                            "const el=document.getElementById(arguments[0]); if(el) el.style.display='block';",
+                            submit_container_id)
+                        submit_el = self.driver.find_element(By.ID, submit_id)
+                    except Exception:
+                        submit_el = None
+
+            if not submit_el:
+                raise TimeoutException(f"Не удалось найти submit: #{submit_id}")
+
+            # 5) клик по submit (JS-путь работает и на скрытом элементе)
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});",
+                                       submit_el)
+            self.human_delay(0.2, 0.6)
+            try:
+                if self.is_visible_js(submit_el):
+                    submit_el.click()
+                else:
+                    self.driver.execute_script("arguments[0].click();", submit_el)
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", submit_el)
+
+            # 6) подтверждение успеха (очистка или скрытие контейнера)
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: ((comment_area.get_attribute(
+                        'value') or '').strip() == '') or
+                              (self.is_visible_js(
+                                  d.find_element(By.ID, submit_container_id)) is False)
+                )
+            except TimeoutException:
+                pass
 
             # Находим кнопку по свежему id и кликаем (JS-фоллбэк)
             self._click_submit_by_id(submit_id)
