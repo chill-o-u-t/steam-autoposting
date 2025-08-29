@@ -293,7 +293,7 @@ class SteamCommentBot:
 
                 # Случайная задержка между группами (2-5 минут)
                 if i < len(groups_to_post) - 1:
-                    delay = random.randint(120, 300)
+                    delay = random.randint(180, 300)
                     print(f"⏳ Ожидание {delay} секунд перед следующей группой...")
                     time.sleep(delay)
 
@@ -310,7 +310,7 @@ class SteamCommentBot:
 
 if __name__ == "__main__":
     # Проверка обязательных переменных
-    required_vars = ['STEAM_LOGIN_SECURE', 'STEAM_GROUPS', 'COMMENT_TEXT']
+    required_vars = ['STEAM_LOGIN_SECURE', 'STEAM_GROUPS']
     missing_vars = [var for var in required_vars if not os.getenv(var)]
 
     if missing_vars:
