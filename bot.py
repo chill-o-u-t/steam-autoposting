@@ -2,6 +2,7 @@ import os
 import time
 import random
 import json
+import tempfile
 from datetime import datetime
 from dotenv import load_dotenv
 from selenium import webdriver
@@ -23,6 +24,7 @@ class SteamCommentBot:
     def __init__(self):
         self.driver = None
         self.wait = None
+        self.temp_dir = tempfile.mkdtemp(prefix="chrome_")
 
     def human_delay(self, min_seconds=1, max_seconds=3):
         """Случайная задержка между действиями"""
@@ -69,24 +71,30 @@ class SteamCommentBot:
         chrome_options.add_argument("--start-maximized")
         chrome_options.add_argument("--disable-notifications")
 
+        # Важные настройки для прав доступа
+        chrome_options.add_argument(f"--user-data-dir={self.temp_dir}")
+        chrome_options.add_argument("--disable-application-cache")
+        chrome_options.add_argument("--disk-cache-size=0")
+
         # Случайный user-agent
         user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         ]
         chrome_options.add_argument(f"user-agent={random.choice(user_agents)}")
 
-        # Используем undetected-chromedriver
-        driver = uc.Chrome(options=chrome_options)
+        # Используем undetected-chromedriver с правильными настройками
+        driver = uc.Chrome(
+            options=chrome_options,
+            user_data_dir=self.temp_dir,  # Важно: указываем временную директорию
+            headless=False,
+            version_main=114  # Укажите конкретную версию если нужно
+        )
 
         # Убираем webdriver признаки
         stealth_script = """
         Object.defineProperty(navigator, 'webdriver', {
             get: () => undefined,
-        });
-        Object.defineProperty(navigator, 'plugins', {
-            get: () => [1, 2, 3, 4, 5],
         });
         """
         driver.execute_script(stealth_script)
@@ -306,6 +314,13 @@ class SteamCommentBot:
             if self.driver:
                 print("🛑 Завершаю работу...")
                 self.driver.quit()
+
+            try:
+                import shutil
+                shutil.rmtree(self.temp_dir, ignore_errors=True)
+                print("🗑️ Временные файлы очищены")
+            except:
+                pass
 
 
 if __name__ == "__main__":
