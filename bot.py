@@ -1,18 +1,30 @@
 import os
 import time
-import requests
 import logging
-import xml.etree.ElementTree as ET
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from webdriver_manager.chrome import ChromeDriverManager
 from dotenv import load_dotenv
 
-# Загружаем .env
+# ----------------------------
+# Настройка
+# ----------------------------
 load_dotenv()
-
 STEAM_LOGIN_SECURE = os.getenv("STEAM_LOGIN_SECURE")
-STEAM_COMMUNITY_URL = os.getenv("STEAM_COMMUNITY_URL", "https://steamcommunity.com")
 GROUPS = os.getenv("GROUPS", "").split(",")
-MESSAGE = os.getenv("MESSAGE", "")
-INTERVAL = int(os.getenv("INTERVAL", 300))  # 300 секунд = 5 минут
+MESSAGE = os.getenv(
+    "MESSAGE",
+    "🖤Send me offer🖤\n"
+    ":steamthis: Open to any deals"
+    "\nhttps://steamcommunity.com/tradeoffer/new/?partner=889283026&token=NhsSV1bu"
+    "\n[H]"
+    "\nButterfly knife | boreal forest FT"
+    "\nSport gloves | bronze morph BS"
+    "\nUSP-S | kill сonfirmed FT"
+)
+INTERVAL = int(os.getenv("INTERVAL", 300))  # 5 минут
 
 # Логирование
 logging.basicConfig(
@@ -21,99 +33,66 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# Сессия с cookies
-session = requests.Session()
-session.cookies.set("steamLoginSecure", STEAM_LOGIN_SECURE, domain="steamcommunity.com")
+# ----------------------------
+# Настройка Selenium
+# ----------------------------
+chrome_options = Options()
+chrome_options.add_argument("--headless")  # убрать, если нужно видеть браузер
+chrome_options.add_argument("--disable-gpu")
+chrome_options.add_argument("--no-sandbox")
 
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Referer": STEAM_COMMUNITY_URL
-}
+driver = webdriver.Chrome(ChromeDriverManager().install(), options=chrome_options)
 
+# ----------------------------
+# Авторизация через cookie
+# ----------------------------
+driver.get("https://steamcommunity.com/")
+driver.delete_all_cookies()
+driver.add_cookie({
+    'name': 'steamLoginSecure',
+    'value': STEAM_LOGIN_SECURE,
+    'domain': '.steamcommunity.com'
+})
+driver.refresh()
+time.sleep(3)  # ждём, пока авторизуется
 
-def get_sessionid():
-    """Получаем sessionid (нужен для POST)"""
-    r = session.get(STEAM_COMMUNITY_URL, headers=headers)
-    if "g_sessionID" in r.text:
-        return r.text.split('g_sessionID = "')[1].split('"')[0]
-    return None
+# Проверка авторизации
+try:
+    driver.find_element(By.ID, "account_pulldown")  # если есть меню аккаунта
+    logging.info("✅ Авторизация успешна")
+except:
+    logging.error("❌ Авторизация не удалась. Проверьте steamLoginSecure")
+    driver.quit()
+    exit(1)
 
-
-def get_groupid(group_url):
-    """Достаём groupID из XML"""
-    if not group_url.endswith("/"):
-        group_url += "/"
-
-    xml_url = group_url + "memberslistxml/?xml=1"
-    r = session.get(xml_url, headers=headers)
-    if r.status_code == 200:
+# ----------------------------
+# Основной цикл
+# ----------------------------
+cycle = 1
+while True:
+    logging.info(f"---- Цикл #{cycle} ----")
+    for group_url in GROUPS:
+        group_url = group_url.strip()
+        if not group_url:
+            continue
         try:
-            root = ET.fromstring(r.text)
-            group_id64 = root.find("groupID64")
-            if group_id64 is not None:
-                return group_id64.text
+            driver.get(group_url)
+            time.sleep(3)  # ждём загрузки страницы
+
+            # Находим поле комментария
+            comment_area = driver.find_element(By.ID, "quickpost_text")
+            comment_area.clear()
+            comment_area.send_keys(MESSAGE)
+            time.sleep(1)
+
+            # Отправляем комментарий
+            submit_btn = driver.find_element(By.ID, "quickpost_submit")
+            submit_btn.click()
+            logging.info(f"✅ Сообщение отправлено в {group_url}")
+            time.sleep(2)
         except Exception as e:
-            logging.error(f"Ошибка парсинга XML {group_url}: {e}")
-    else:
-        logging.error(f"Ошибка {r.status_code} при получении groupID {group_url}")
-    return None
+            logging.error(f"❌ Не удалось отправить комментарий в {group_url}: {e}")
 
-
-def post_comment(group_url, message):
-    """Отправляем комментарий в группу"""
-    groupid = get_groupid(group_url)
-    if not groupid:
-        logging.error(f"Не удалось получить groupid для {group_url}")
-        return
-
-    sessionid = get_sessionid()
-    if not sessionid:
-        logging.error("Не удалось получить sessionid")
-        return
-
-    # Добавляем sessionid в cookies
-    session.cookies.set("sessionid", sessionid, domain="steamcommunity.com")
-
-    # URL обязательно с "-1" в конце
-    comment_url = f"https://steamcommunity.com/comment/Clan/post/{groupid}/-1/"
-
-    payload = {
-        "comment": message,
-        "count": 6,
-        "sessionid": sessionid,
-        "feature2": -1,
-        "extended_data": ""
-    }
-
-    # Referer должен быть = URL группы
-    headers_local = headers.copy()
-    headers_local["Referer"] = group_url
-
-    r = session.post(comment_url, data=payload, headers=headers_local)
-
-    try:
-        resp_json = r.json()
-    except Exception:
-        resp_json = r.text
-
-    if r.status_code == 200 and isinstance(resp_json, dict) and resp_json.get("success"):
-        logging.info(f"✅ Сообщение отправлено в {group_url}")
-    else:
-        logging.error(f"❌ Ошибка отправки в {group_url} | Код {r.status_code} | Ответ: {resp_json}")
-
-
-def run():
-    cycle = 1
-    while True:
-        logging.info(f"---- Цикл #{cycle} ----")
-        for group in GROUPS:
-            group = group.strip()
-            if group:
-                post_comment(group, MESSAGE)
-        logging.info(f"Ожидание {INTERVAL} секунд...")
-        time.sleep(INTERVAL)
-        cycle += 1
-
-
-if __name__ == "__main__":
-    run()
+    logging.info(f"Ожидание {INTERVAL} секунд до следующего цикла...")
+    time.sleep(INTERVAL)
+    cycle += 1
