@@ -74,16 +74,18 @@ def post_comment(group_url, message):
     # Добавляем sessionid в cookies
     session.cookies.set("sessionid", sessionid, domain="steamcommunity.com")
 
-    comment_url = f"https://steamcommunity.com/comment/Clan/post/{groupid}/"
+    # URL обязательно с "-1" в конце
+    comment_url = f"https://steamcommunity.com/comment/Clan/post/{groupid}/-1/"
 
     payload = {
         "comment": message,
         "count": 6,
         "sessionid": sessionid,
+        "feature2": -1,
         "extended_data": ""
     }
 
-    # Referer должен совпадать с группой
+    # Referer должен быть = URL группы
     headers_local = headers.copy()
     headers_local["Referer"] = group_url
 
