@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  steam-bot:
+    build: .
+    container_name: steam-bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
