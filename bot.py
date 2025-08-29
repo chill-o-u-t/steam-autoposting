@@ -215,6 +215,7 @@ class SteamCommentBot:
             for selector in button_selectors:
                 try:
                     submit_button = self.driver.find_element(By.CSS_SELECTOR, selector)
+
                     print(f"✅ Найдена кнопка отправки: {selector}")
                     break
                 except:
@@ -227,7 +228,22 @@ class SteamCommentBot:
             # Человеческое нажатие кнопки
             self.move_mouse_humanly(submit_button)
             self.human_delay(1, 2)
-            submit_button.click()
+            try:
+                submit_button = self.wait.until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR,
+                                                ".commentthread_submit input, .commentthread_submit button, .DialogButton"))
+                )
+                self.move_mouse_humanly(submit_button)
+                self.human_delay(0.5, 1.5)
+                # если всё ещё невидимая — жмём JS
+                if not submit_button.is_displayed() or submit_button.size == {
+                    'height': 0, 'width': 0}:
+                    self.driver.execute_script("arguments[0].click();", submit_button)
+                else:
+                    submit_button.click()
+                print("✅ Комментарий отправлен")
+            except Exception as e:
+                print(f"❌ Ошибка при клике по кнопке: {e}")
 
             print("✅ Комментарий отправлен")
             self.human_delay(5, 10)  # Долгая пауза после отправки
