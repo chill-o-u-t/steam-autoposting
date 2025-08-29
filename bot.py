@@ -55,45 +55,44 @@ class SteamCommentBot:
         self.human_delay(0.2, 0.5)
 
     def get_stealth_driver(self):
-        chrome_options = Options()
-        # headless для контейнера
+        # ВАЖНО: берём опции из uc
+        chrome_options = uc.ChromeOptions()
+
+        # контейнер/Alpine
         chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--window-size=1920,1080")
 
-        # антидетект
+        # антидетект: достаточно этого флага
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option("useAutomationExtension", False)
 
-        # кэш/профиль (только один способ!)
+        # КЭШ/профиль — не дублируем user_data_dir
         chrome_options.add_argument(f"--user-data-dir={self.temp_dir}")
         chrome_options.add_argument("--disable-application-cache")
         chrome_options.add_argument("--disk-cache-size=0")
 
-        ua = random.choice([
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        ])
-        chrome_options.add_argument(f"--user-agent={ua}")
-
-        # важное для Alpine: указываем системные бинарники
-        browser_bin = os.getenv("CHROME_BIN", "/usr/bin/chromium-browser")
-        driver_bin = os.getenv("UC_DRIVER_EXECUTABLE_PATH", "/usr/bin/chromedriver")
-        chrome_options.binary_location = browser_bin
-
-        # если системный chromedriver существует — используем его
-        driver = uc.Chrome(
-            options=chrome_options,
-            driver_executable_path=driver_bin if os.path.exists(driver_bin) else None,
-            # НЕ указываем version_main — пусть uc сам подберёт
-            # НЕ передаём user_data_dir второй раз
-            headless=True,  # дублируем для надёжности внутри uc
+        # user-agent
+        chrome_options.add_argument(
+            "--user-agent="
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
 
-        # дополнительный шлиф
+        CHROME_BIN = os.getenv("CHROME_BIN", "/usr/bin/chromium-browser")
+        CHROMEDRIVER = os.getenv("UC_DRIVER_EXECUTABLE_PATH", "/usr/bin/chromedriver")
+
+        # Не указываем version_main; не используем excludeSwitches/useAutomationExtension
+        driver = uc.Chrome(
+            options=chrome_options,
+            headless=True,
+            browser_executable_path=CHROME_BIN,  # вместо options.binary_location
+            driver_executable_path=CHROMEDRIVER if os.path.exists(
+                CHROMEDRIVER) else None,
+        )
+
+        # Доп. шлиф — необязательно с uc, но не мешает
         driver.execute_script(
             "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         return driver
