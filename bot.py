@@ -404,23 +404,24 @@ class SteamCommentBot:
         # цикл по группам
         ok, fail = 0, 0
         print(f"📊 Начинаю отправку комментариев в {len(STEAM_GROUPS)} групп(ы)...")
-        for i, url in enumerate(STEAM_GROUPS, 1):
-            if not url:
-                continue
-            print(f"\n📝 Группа {i}/{len(STEAM_GROUPS)}: {url}")
-            if self.post_comment_to_group(url, MESSAGE):
-                ok += 1
-                print(f"✅ Успешно: {ok}")
-            else:
-                fail += 1
-                print(f"❌ Неудачно: {fail}")
+        while True:
+            for i, url in enumerate(STEAM_GROUPS, 1):
+                if not url:
+                    continue
+                print(f"\n📝 Группа {i}/{len(STEAM_GROUPS)}: {url}")
+                if self.post_comment_to_group(url, MESSAGE):
+                    ok += 1
+                    print(f"✅ Успешно: {ok}")
+                else:
+                    fail += 1
+                    print(f"❌ Неудачно: {fail}")
 
-            if i < len(STEAM_GROUPS):
-                wait_sec = random.randint(180, 300)
-                print(f"⏳ Ожидание {wait_sec} сек перед следующей группой…")
-                time.sleep(wait_sec)
+                if i < len(STEAM_GROUPS):
+                    wait_sec = random.randint(5, 10)
+                    print(f"⏳ Ожидание {wait_sec} сек перед следующей группой…")
+                    time.sleep(wait_sec)
+            time.sleep(300)
 
-        print(f"\n🎯 Итог: Успешно {ok}, Неудачно {fail}")
         _graceful_exit()
 
 
