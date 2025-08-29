@@ -57,14 +57,14 @@ driver.add_cookie({
     'domain': '.steamcommunity.com'
 })
 driver.refresh()
-time.sleep(5)  # ждём авторизацию
+time.sleep(10)  # ждём прогрузки JS и cookie
 
-# Проверка авторизации
-try:
-    driver.find_element(By.ID, "account_pulldown")
-    logging.info("✅ Авторизация успешна")
-except:
-    logging.error("❌ Авторизация не удалась. Проверьте steamLoginSecure")
+# Проверка авторизации по cookie sessionid
+session_cookie = driver.get_cookie("sessionid")
+if session_cookie:
+    logging.info("✅ Авторизация успешна (sessionid найден)")
+else:
+    logging.error("❌ Авторизация не удалась. Проверьте steamLoginSecure и другие куки")
     driver.quit()
     exit(1)
 
@@ -81,20 +81,21 @@ while True:
         try:
             driver.get(group_url)
 
-            # ждём, пока страница загрузится и появится поле комментария
-            comment_area = WebDriverWait(driver, 10).until(
+            # ждём появления поля комментария
+            comment_area = WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, "textarea[id*='quickpost_text']"))
             )
             comment_area.clear()
             comment_area.send_keys(MESSAGE)
 
-            submit_btn = WebDriverWait(driver, 10).until(
+            # ждём кнопку отправки
+            submit_btn = WebDriverWait(driver, 15).until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, "button[id*='quickpost_submit']"))
             )
             submit_btn.click()
 
             logging.info(f"✅ Сообщение отправлено в {group_url}")
-            time.sleep(3)  # пауза после отправки
+            time.sleep(3)
         except Exception as e:
             logging.error(f"❌ Не удалось отправить комментарий в {group_url}: {e}")
 
