@@ -55,52 +55,47 @@ class SteamCommentBot:
         self.human_delay(0.2, 0.5)
 
     def get_stealth_driver(self):
-        """Настройка браузера для обхода детекции"""
         chrome_options = Options()
-
-        # Отключаем автоматизационные признаки
-        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-
-        # Обычные настройки браузера
-        chrome_options.add_argument("--disable-dev-shm-usage")
+        # headless для контейнера
+        chrome_options.add_argument("--headless=new")
         chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("--start-maximized")
-        chrome_options.add_argument("--disable-notifications")
 
-        # Важные настройки для прав доступа
+        # антидетект
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option("useAutomationExtension", False)
+
+        # кэш/профиль (только один способ!)
         chrome_options.add_argument(f"--user-data-dir={self.temp_dir}")
         chrome_options.add_argument("--disable-application-cache")
         chrome_options.add_argument("--disk-cache-size=0")
 
-        # Случайный user-agent
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-        ]
-        chrome_options.add_argument(f"user-agent={random.choice(user_agents)}")
+        ua = random.choice([
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        ])
+        chrome_options.add_argument(f"--user-agent={ua}")
 
-        # Используем undetected-chromedriver с правильными настройками
+        # важное для Alpine: указываем системные бинарники
+        browser_bin = os.getenv("CHROME_BIN", "/usr/bin/chromium-browser")
+        driver_bin = os.getenv("UC_DRIVER_EXECUTABLE_PATH", "/usr/bin/chromedriver")
+        chrome_options.binary_location = browser_bin
+
+        # если системный chromedriver существует — используем его
         driver = uc.Chrome(
             options=chrome_options,
-            user_data_dir=self.temp_dir,  # Важно: указываем временную директорию
-            headless=False,
-            version_main=114,  # Укажите конкретную версию если нужно
-            driver_executable_path=os.getenv("UC_DRIVER_EXECUTABLE_PATH",
-                                             "/usr/bin/chromedriver"),
+            driver_executable_path=driver_bin if os.path.exists(driver_bin) else None,
+            # НЕ указываем version_main — пусть uc сам подберёт
+            # НЕ передаём user_data_dir второй раз
+            headless=True,  # дублируем для надёжности внутри uc
         )
 
-        # Убираем webdriver признаки
-        stealth_script = """
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => undefined,
-        });
-        """
-        driver.execute_script(stealth_script)
-
+        # дополнительный шлиф
+        driver.execute_script(
+            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         return driver
 
     def login_with_cookies(self):
