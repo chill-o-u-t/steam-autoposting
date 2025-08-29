@@ -18,6 +18,61 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 import undetected_chromedriver as uc
 from selenium.common.exceptions import TimeoutException
 from time import monotonic, sleep
+from selenium.webdriver.common.keys import Keys
+from selenium.common.exceptions import TimeoutException
+
+def _find_entry_container(driver, textarea):
+    # ближайший контейнер для блока комментария
+    return driver.execute_script("""
+        const el = arguments[0];
+        return el.closest('.commentthread_entry') 
+            || el.closest('.commentthread_area') 
+            || el.closest('form') 
+            || document;
+    """, textarea)
+
+def _pick_submit_inside(driver, container):
+    # ищем максимально широкий набор вариантов
+    return driver.execute_script("""
+        const root = arguments[0];
+        const sel = [
+            "button[id*='quickpost_submit']",
+            "#quickpost_submit",
+            ".commentthread_submit [id*='_submit']",
+            ".commentthread_submit .btn_green_white_innerfade",
+            ".commentthread_submit .btnv6_blue_hoverfade",
+            ".commentthread_footer .btn_green_white_innerfade",
+            ".commentthread_footer .btnv6_blue_hoverfade",
+            ".commentthread_submit button[type='submit']",
+            ".commentthread_submit input[type='submit']",
+            // общий запасной вариант
+            "button[type='submit']",
+            "input[type='submit']"
+        ].join(',');
+        return root.querySelector(sel);
+    """, container)
+
+def _is_visible(driver, el):
+    if not el:
+        return False
+    try:
+        # проверяем display/visibility/размер
+        return driver.execute_script("""
+            const el = arguments[0];
+            const r = el.getBoundingClientRect();
+            const st = window.getComputedStyle(el);
+            return !!(
+                r.width > 0 && r.height > 0 &&
+                st.visibility !== 'hidden' &&
+                st.display !== 'none'
+            );
+        """, el)
+    except Exception:
+        return False
+
+def _js_click(driver, el):
+    driver.execute_script("arguments[0].click();", el)
+
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -234,6 +289,8 @@ class SteamCommentBot:
             print(f"🌐 Перехожу в группу: {group_url}")
             self.driver.get(group_url)
 
+
+
             # Ищем «быстрый пост» как в старой версии
             comment_area = self.wait.until(
                 EC.presence_of_element_located((By.CSS_SELECTOR,
@@ -247,26 +304,45 @@ class SteamCommentBot:
             # очищаем через JS (иногда .clear() не триггерит события)
             self.driver.execute_script("arguments[0].value='';", comment_area)
 
-            # Ввод: если есть эмодзи — через JS, иначе «человеческий» набор
-            if self.has_non_bmp(comment_text):
-                self.js_fill_textarea(comment_area, comment_text)
+            container = _find_entry_container(self.driver, comment_area)
+            submit = _pick_submit_inside(self.driver, container)
+
+            html = self.driver.execute_script("return arguments[0].outerHTML;",
+                                              container)
+            print(html[:4000])
+
+            # если нашли, пробуем кликнуть
+            if submit:
+                self.scroll_into_view(submit)
+                self.move_mouse_humanly(submit)
+                self.human_delay(0.2, 0.6)
+                try:
+                    if _is_visible(self.driver, submit):
+                        submit.click()
+                    else:
+                        _js_click(self.driver,
+                                  submit)  # обходит "has no size and location"
+                except Exception:
+                    _js_click(self.driver, submit)
             else:
-                comment_area.click()
-                self.human_type(comment_area, comment_text)
+                # кнопки нет — пробуем submit формы или хоткей
+                fired = self.driver.execute_script("""
+                    const root = arguments[0];
+                    const form = root.closest('form');
+                    if (form) {
+                        const ev = new Event('submit', {bubbles:true, cancelable:true});
+                        form.dispatchEvent(ev);
+                        if (typeof form.submit === 'function') form.submit();
+                        return 'form-submitted';
+                    }
+                    return 'no-form';
+                """, comment_area)
 
-            html = self.driver.execute_script(
-                "return document.querySelector('.commentthread_submit')?.outerHTML || document.body.outerHTML.slice(0,5000)")
-            print(html)
+                if fired != 'form-submitted':
+                    # запасной путь: Ctrl+Enter (часто поддерживается)
+                    comment_area.send_keys(Keys.CONTROL, Keys.ENTER)
 
-            # Находим кнопку «Отправить» как в рабочей версии
-            submit_btn = self.wait_any_visible(submit_selectors, timeout=15)
-            self.scroll_into_view(submit_btn)
-            self.move_mouse_humanly(submit_btn)
-            self.human_delay(0.3, 0.8)
-
-            self.safe_click(submit_btn)
-
-            # Подтверждение — textarea очистилась или появилась запись
+            # подтверждение (очистилась textarea или кнопка задизейблилась)
             try:
                 WebDriverWait(self.driver, 10).until(
                     lambda d: (comment_area.get_attribute("value") or "").strip() == ""
