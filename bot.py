@@ -5,6 +5,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from dotenv import load_dotenv
 from webdriver_manager.chrome import ChromeDriverManager
 
@@ -26,9 +28,8 @@ MESSAGE = os.getenv(
 )
 INTERVAL = int(os.getenv("INTERVAL", 300))  # 5 минут
 
-# Логирование
+# Логирование в консоль
 logging.basicConfig(
-    filename="logs/logs.txt",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
@@ -37,7 +38,7 @@ logging.basicConfig(
 # Настройка Selenium
 # ----------------------------
 chrome_options = Options()
-chrome_options.add_argument("--headless")  # убрать, если нужен визуальный браузер
+chrome_options.add_argument("--headless")  # убрать, если нужен видимый браузер
 chrome_options.add_argument("--disable-gpu")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--window-size=1920,1080")
@@ -60,7 +61,7 @@ time.sleep(5)  # ждём авторизацию
 
 # Проверка авторизации
 try:
-    driver.find_element(By.ID, "account_pulldown")  # если есть меню аккаунта
+    driver.find_element(By.ID, "account_pulldown")
     logging.info("✅ Авторизация успешна")
 except:
     logging.error("❌ Авторизация не удалась. Проверьте steamLoginSecure")
@@ -79,19 +80,21 @@ while True:
             continue
         try:
             driver.get(group_url)
-            time.sleep(5)  # ждём загрузки страницы
 
-            # Находим поле комментария
-            comment_area = driver.find_element(By.ID, "quickpost_text")
+            # ждём, пока страница загрузится и появится поле комментария
+            comment_area = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "textarea[id*='quickpost_text']"))
+            )
             comment_area.clear()
             comment_area.send_keys(MESSAGE)
-            time.sleep(1)
 
-            # Отправляем комментарий
-            submit_btn = driver.find_element(By.ID, "quickpost_submit")
+            submit_btn = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button[id*='quickpost_submit']"))
+            )
             submit_btn.click()
+
             logging.info(f"✅ Сообщение отправлено в {group_url}")
-            time.sleep(3)
+            time.sleep(3)  # пауза после отправки
         except Exception as e:
             logging.error(f"❌ Не удалось отправить комментарий в {group_url}: {e}")
 
