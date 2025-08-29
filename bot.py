@@ -16,6 +16,8 @@ from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, \
     ElementNotInteractableException
 import undetected_chromedriver as uc
+from selenium.common.exceptions import TimeoutException
+from time import monotonic, sleep
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -31,6 +33,34 @@ class SteamCommentBot:
         """Случайная задержка между действиями"""
         delay = random.uniform(min_seconds, max_seconds)
         time.sleep(delay)
+
+    def wait_any_visible(self, selectors, timeout=15):
+        """Ждет первый видимый элемент по любому из селекторов."""
+        deadline = monotonic() + timeout
+        while monotonic() < deadline:
+            for css in selectors:
+                els = self.driver.find_elements(By.CSS_SELECTOR, css)
+                for el in els:
+                    if el.is_displayed() and el.size.get('width', 0) > 0 and el.size.get(
+                            'height', 0) > 0:
+                        return el
+            sleep(0.2)
+        raise TimeoutException(f"Не нашел видимую кнопку по {selectors}")
+
+    def scroll_into_view(self, el):
+        self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+
+    def safe_click(self, el):
+        """Клик с фоллбэком на JS, если элемент невидим/без размера."""
+        try:
+            if not el.is_displayed() or el.size.get('width', 0) == 0 or el.size.get(
+                    'height', 0) == 0:
+                self.driver.execute_script("arguments[0].click();", el)
+            else:
+                el.click()
+        except Exception:
+            self.driver.execute_script("arguments[0].click();", el)
+
 
     def has_non_bmp(self, s: str) -> bool:
         return any(ord(ch) > 0xFFFF for ch in s)
@@ -187,6 +217,20 @@ class SteamCommentBot:
     # --- замена метода ---
     def post_comment_to_group(self, group_url, comment_text):
         try:
+            submit_selectors = [
+                # быстрый пост
+                "button[id*='quickpost_submit']",
+                "#quickpost_submit",
+                # обычный comment thread
+                ".commentthread_submit [id*='_submit']",
+                ".commentthread_submit .btn_green_white_innerfade",
+                ".commentthread_submit .btnv6_blue_hoverfade",
+                ".commentthread_footer .btn_green_white_innerfade",
+                ".commentthread_footer .btnv6_blue_hoverfade",
+                # на всякий случай любой submit внутри блока
+                ".commentthread_submit button[type='submit']",
+                ".commentthread_submit input[type='submit']",
+            ]
             print(f"🌐 Перехожу в группу: {group_url}")
             self.driver.get(group_url)
 
@@ -210,22 +254,17 @@ class SteamCommentBot:
                 comment_area.click()
                 self.human_type(comment_area, comment_text)
 
+            html = self.driver.execute_script(
+                "return document.querySelector('.commentthread_submit')?.outerHTML || document.body.outerHTML.slice(0,5000)")
+            print(html)
+
             # Находим кнопку «Отправить» как в рабочей версии
-            print(1)
-            submit_btn = self.wait.until(
-                EC.presence_of_element_located((
-                    By.CSS_SELECTOR,
-                    "button[id*='quickpost_submit'], .commentthread_submit button, .commentthread_submit input[type='submit']"
-                ))
-            )
-            print(2)
+            submit_btn = self.wait_any_visible(submit_selectors, timeout=15)
             self.scroll_into_view(submit_btn)
             self.move_mouse_humanly(submit_btn)
             self.human_delay(0.3, 0.8)
 
-            # Клик с фоллбэком на JS (исправляет «has no size and location»)
             self.safe_click(submit_btn)
-            print("3")
 
             # Подтверждение — textarea очистилась или появилась запись
             try:
